@@ -40,6 +40,37 @@ export interface SearchResult {
   isDirectory: boolean;
 }
 
+// Grep-related interfaces
+export interface GrepOptions {
+  searchPath: string;
+  pattern: string;
+  ignoreCase?: boolean;
+  recursive?: boolean;
+  maxResults?: number;
+  context?: number;
+  beforeContext?: number;
+  afterContext?: number;
+  filePattern?: string;
+  includeLineNumbers?: boolean;
+  excludePatterns?: string[];
+  invertMatch?: boolean;
+  fixedStrings?: boolean;
+}
+
+export interface GrepMatch {
+  file: string;
+  lineNumber: number;
+  content: string;
+  contextBefore?: string[];
+  contextAfter?: string[];
+}
+
+export interface GrepResult {
+  file: string;
+  matches: GrepMatch[];
+  totalMatches: number;
+}
+
 // Pure Utility Functions
 export function formatSize(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -388,5 +419,224 @@ export async function searchFilesWithValidation(
   }
 
   await search(rootPath);
+  return results;
+}
+
+// Grep Content Search Functions
+export async function searchFileContents(options: GrepOptions): Promise<string[]> {
+  const {
+    searchPath,
+    pattern,
+    ignoreCase = false,
+    recursive = true,
+    maxResults = 100,
+    context = 0,
+    beforeContext,
+    afterContext,
+    filePattern = '*',
+    includeLineNumbers = true,
+    excludePatterns = [],
+    invertMatch = false,
+    fixedStrings = false
+  } = options;
+
+  // Handle context parameter properly - if context is provided (and not 0), it overrides beforeContext and afterContext
+  // This follows the Python implementation where context parameter takes precedence
+  const effectiveBeforeContext = (context !== undefined && context > 0) ? context : (beforeContext !== undefined ? beforeContext : 0);
+  const effectiveAfterContext = (context !== undefined && context > 0) ? context : (afterContext !== undefined ? afterContext : 0);
+
+  // Validate the search path
+  const validatedSearchPath = await validatePath(searchPath);
+
+  // Handle pattern based on flags (similar to Python implementation)
+  let effectivePattern = pattern;
+  if (fixedStrings) {
+    // For fixed strings, escape the pattern to match it literally
+    effectivePattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  let regex: RegExp | null = null;
+  try {
+    regex = new RegExp(effectivePattern, ignoreCase ? 'gi' : 'g');
+  } catch (error) {
+    throw new Error(`Invalid regex pattern: ${effectivePattern}. ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+
+  // Helper function to check if a line matches the pattern
+  const matchesPattern = (line: string): boolean => {
+    let matches: boolean;
+    if (regex) {
+      // Reset regex for each line to handle global flag correctly
+      regex.lastIndex = 0;
+      matches = regex.test(line);
+      regex.lastIndex = 0; // Reset again for future uses
+    } else {
+      // Fallback for non-regex matches
+      if (ignoreCase) {
+        matches = line.toLowerCase().includes(pattern.toLowerCase());
+      } else {
+        matches = line.includes(pattern);
+      }
+    }
+
+    // Handle invertMatch - return true if line should be included
+    return matches !== invertMatch;
+  };
+
+  const results: string[] = [];
+  let totalMatches = 0;
+
+  async function searchInFile(filePath: string): Promise<void> {
+    if (totalMatches >= maxResults) return;
+
+    try {
+      // Additional validation for each file
+      await validatePath(filePath);
+
+      // Check if file should be excluded
+      const relativePath = path.relative(validatedSearchPath, filePath);
+      const shouldExclude = excludePatterns.some(excludePattern =>
+        minimatch(relativePath, excludePattern, { dot: true })
+      );
+
+      if (shouldExclude) return;
+
+      // Try to read the file as text
+      const content = await readFileContent(filePath);
+      const lines = normalizeLineEndings(content).split('\n');
+
+      const fileMatches: GrepMatch[] = [];
+
+      for (let i = 0; i < lines.length && totalMatches < maxResults; i++) {
+        const line = lines[i];
+
+        if (matchesPattern(line)) {
+          const contextBeforeLines = effectiveBeforeContext > 0
+            ? lines.slice(Math.max(0, i - effectiveBeforeContext), i)
+            : [];
+          const contextAfterLines = effectiveAfterContext > 0
+            ? lines.slice(i + 1, Math.min(lines.length, i + 1 + effectiveAfterContext))
+            : [];
+
+          const match: GrepMatch = {
+            file: filePath,
+            lineNumber: i + 1,
+            content: line,
+            contextBefore: contextBeforeLines.length > 0 ? contextBeforeLines : undefined,
+            contextAfter: contextAfterLines.length > 0 ? contextAfterLines : undefined
+          };
+
+          fileMatches.push(match);
+          totalMatches++;
+
+          if (totalMatches >= maxResults) break;
+        }
+      }
+
+      // Format results for this file
+      if (fileMatches.length > 0) {
+        let fileResult = `File: ${filePath}\n`;
+
+        for (const match of fileMatches) {
+          if (includeLineNumbers) {
+            fileResult += `  Line ${match.lineNumber}: ${match.content}\n`;
+          } else {
+            fileResult += `  ${match.content}\n`;
+          }
+
+          if (effectiveBeforeContext > 0 || effectiveAfterContext > 0) {
+            if (match.contextBefore && match.contextBefore.length > 0) {
+              fileResult += '    Context before:\n';
+              match.contextBefore.forEach((line, idx) => {
+                const lineNum = match.lineNumber - effectiveBeforeContext + idx;
+                fileResult += `      ${includeLineNumbers ? `${lineNum}: ` : ''}${line}\n`;
+              });
+            }
+
+            if (match.contextAfter && match.contextAfter.length > 0) {
+              fileResult += '    Context after:\n';
+              match.contextAfter.forEach((line, idx) => {
+                const lineNum = match.lineNumber + idx + 1;
+                fileResult += `      ${includeLineNumbers ? `${lineNum}: ` : ''}${line}\n`;
+              });
+            }
+          }
+        }
+
+        results.push(fileResult.trim());
+      }
+
+    } catch (error) {
+      // Skip files that can't be read as text or are not accessible
+      // Common cases: binary files, permission issues, directories, etc.
+      if (error instanceof Error) {
+        // Only skip expected errors, throw unexpected ones
+        const errorCode = (error as any)?.code;
+        if (errorCode === 'EISDIR' ||
+            errorCode === 'EACCES' ||
+            errorCode === 'ENOENT' ||
+            error.message.includes('Access denied')) {
+          return; // Skip this file
+        }
+      }
+      // For other errors, we might want to continue but could optionally log
+      return;
+    }
+  }
+
+  async function searchDirectory(dirPath: string): Promise<void> {
+    if (totalMatches >= maxResults) return;
+
+    try {
+      // Validate directory path
+      await validatePath(dirPath);
+
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+
+      for (const entry of entries) {
+        if (totalMatches >= maxResults) break;
+
+        const fullPath = path.join(dirPath, entry.name);
+
+        try {
+          if (entry.isFile()) {
+            // Check if file matches the file pattern
+            if (filePattern === '*' || minimatch(entry.name, filePattern)) {
+              await searchInFile(fullPath);
+            }
+          } else if (entry.isDirectory() && recursive) {
+            await searchDirectory(fullPath);
+          }
+        } catch (error) {
+          // Skip individual files/directories that can't be accessed
+          continue;
+        }
+      }
+    } catch (error) {
+      // Handle directory read errors
+      if (error instanceof Error) {
+        const errorCode = (error as any)?.code;
+        if (errorCode === 'EACCES' || errorCode === 'ENOENT') {
+          return; // Skip directories we can't access
+        }
+      }
+      throw error; // Re-throw unexpected errors
+    }
+  }
+
+  // Determine if search path is a file or directory
+  const stats = await fs.stat(validatedSearchPath);
+  if (stats.isFile()) {
+    // Check if single file matches file pattern
+    const fileName = path.basename(validatedSearchPath);
+    if (filePattern === '*' || minimatch(fileName, filePattern)) {
+      await searchInFile(validatedSearchPath);
+    }
+  } else if (stats.isDirectory()) {
+    await searchDirectory(validatedSearchPath);
+  } else {
+    throw new Error(`Path is neither a file nor a directory: ${validatedSearchPath}`);
+  }
+
   return results;
 }

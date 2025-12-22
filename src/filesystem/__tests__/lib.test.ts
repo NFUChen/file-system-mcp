@@ -16,6 +16,7 @@ import {
   writeFileContent,
   // Search & filtering functions
   searchFilesWithValidation,
+  searchFileContents,
   // File editing functions
   applyFileEdits,
   tailFile,
@@ -383,6 +384,293 @@ describe('Lib Functions', () => {
           '/allowed/dir/important_test.js'
         ];
         expect(result).toEqual(expectedResults);
+      });
+    });
+
+    describe('searchFileContents', () => {
+      beforeEach(() => {
+        mockFs.realpath.mockImplementation(async (path: any) => path.toString());
+        mockFs.stat.mockResolvedValue({
+          isFile: () => true,
+          isDirectory: () => false
+        });
+      });
+
+      it('finds matches in file content', async () => {
+        const testContent = 'Hello world\nThis is a test\nHello again';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'Hello'
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toContain('File: ' + testPath);
+        expect(result[0]).toContain('Line 1: Hello world');
+        expect(result[0]).toContain('Line 3: Hello again');
+      });
+
+      it('handles case-insensitive searches', async () => {
+        const testContent = 'Hello World\ntest content\nhello again';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'HELLO',
+          ignoreCase: true
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toContain('Line 1: Hello World');
+        expect(result[0]).toContain('Line 3: hello again');
+      });
+
+      it('respects maxResults limit', async () => {
+        const testContent = 'test\ntest\ntest\ntest';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'test',
+          maxResults: 2
+        });
+
+        expect(result).toHaveLength(1);
+        const resultText = result[0];
+        const lineCount = (resultText.match(/Line \d+:/g) || []).length;
+        expect(lineCount).toBe(2);
+      });
+
+      it('includes context lines when requested', async () => {
+        const testContent = 'before1\nbefore2\ntarget line\nafter1\nafter2';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'target',
+          context: 2
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toContain('target line');
+        expect(result[0]).toContain('Context before:');
+        expect(result[0]).toContain('1: before1');
+        expect(result[0]).toContain('2: before2');
+        expect(result[0]).toContain('Context after:');
+        expect(result[0]).toContain('4: after1');
+        expect(result[0]).toContain('5: after2');
+      });
+
+      it('handles directory search recursively', async () => {
+        const testDir = process.platform === 'win32' ? 'C:\\allowed\\testdir' : '/allowed/testdir';
+        const testFile = process.platform === 'win32' ? 'C:\\allowed\\testdir\\test.txt' : '/allowed/testdir/test.txt';
+
+        // Mock directory stats
+        mockFs.stat
+          .mockResolvedValueOnce({
+            isFile: () => false,
+            isDirectory: () => true
+          })
+          .mockResolvedValue({
+            isFile: () => true,
+            isDirectory: () => false
+          });
+
+        // Mock directory reading
+        mockFs.readdir.mockResolvedValueOnce([
+          { name: 'test.txt', isFile: () => true, isDirectory: () => false }
+        ]);
+
+        // Mock file content
+        mockFs.readFile.mockResolvedValueOnce('Hello world');
+
+        const result = await searchFileContents({
+          searchPath: testDir,
+          pattern: 'Hello',
+          recursive: true
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toContain('File: ' + testFile);
+        expect(result[0]).toContain('Hello world');
+      });
+
+      it('filters files by pattern', async () => {
+        const testDir = process.platform === 'win32' ? 'C:\\allowed\\testdir' : '/allowed/testdir';
+
+        // Mock directory stats
+        mockFs.stat.mockResolvedValueOnce({
+          isFile: () => false,
+          isDirectory: () => true
+        });
+
+        // Mock directory reading with multiple file types
+        mockFs.readdir.mockResolvedValueOnce([
+          { name: 'test.txt', isFile: () => true, isDirectory: () => false },
+          { name: 'test.js', isFile: () => true, isDirectory: () => false }
+        ]);
+
+        const result = await searchFileContents({
+          searchPath: testDir,
+          pattern: 'test',
+          filePattern: '*.txt'
+        });
+
+        expect(mockFs.readFile).toHaveBeenCalledTimes(1);
+        expect(mockFs.readFile).toHaveBeenCalledWith(
+          process.platform === 'win32' ? 'C:\\allowed\\testdir\\test.txt' : '/allowed/testdir/test.txt',
+          'utf-8'
+        );
+      });
+
+      it('returns empty array when no matches found', async () => {
+        const testContent = 'This content has no matches';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'nonexistent'
+        });
+
+        expect(result).toHaveLength(0);
+      });
+
+      it('throws error for invalid regex pattern', async () => {
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        await expect(searchFileContents({
+          searchPath: testPath,
+          pattern: '['  // Invalid regex
+        })).rejects.toThrow('Invalid regex pattern');
+      });
+
+      it('handles file read errors gracefully', async () => {
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        const error = new Error('Permission denied') as any;
+        error.code = 'EACCES';
+        mockFs.readFile.mockRejectedValueOnce(error);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'test'
+        });
+
+        expect(result).toHaveLength(0);
+      });
+
+      it('handles invertMatch option', async () => {
+        const testContent = 'Hello world\nThis is a test\nGoodbye world';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'world',
+          invertMatch: true
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toContain('Line 2: This is a test');
+        expect(result[0]).not.toContain('Hello world');
+        expect(result[0]).not.toContain('Goodbye world');
+      });
+
+      it('handles fixedStrings option', async () => {
+        const testContent = 'file.txt\nfile.*\n*.txt';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: '.*',
+          fixedStrings: true
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toContain('Line 2: file.*');
+        expect(result[0]).not.toContain('file.txt');
+        expect(result[0]).not.toContain('*.txt');
+      });
+
+      it('handles separate beforeContext and afterContext', async () => {
+        const testContent = 'line1\nline2\ntarget line\nline4\nline5\nline6';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'target',
+          beforeContext: 1,
+          afterContext: 2
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toContain('target line');
+        expect(result[0]).toContain('Context before:');
+        expect(result[0]).toContain('2: line2');
+        expect(result[0]).toContain('Context after:');
+        expect(result[0]).toContain('4: line4');
+        expect(result[0]).toContain('5: line5');
+        expect(result[0]).not.toContain('line1');
+        expect(result[0]).not.toContain('line6');
+      });
+
+      it('handles context parameter overriding beforeContext and afterContext', async () => {
+        const testContent = 'line1\nline2\ntarget line\nline4\nline5';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'target',
+          context: 1,
+          beforeContext: 2, // Should be overridden by context
+          afterContext: 2   // Should be overridden by context
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toContain('target line');
+        expect(result[0]).toContain('Context before:');
+        expect(result[0]).toContain('2: line2');
+        expect(result[0]).toContain('Context after:');
+        expect(result[0]).toContain('4: line4');
+        expect(result[0]).not.toContain('line1');
+        expect(result[0]).not.toContain('line5');
+      });
+
+      it('combines fixedStrings with ignoreCase', async () => {
+        const testContent = 'Hello.World\nhello.*\nHELLO world';
+        const testPath = process.platform === 'win32' ? 'C:\\allowed\\test.txt' : '/allowed/test.txt';
+
+        mockFs.readFile.mockResolvedValueOnce(testContent);
+
+        const result = await searchFileContents({
+          searchPath: testPath,
+          pattern: 'HELLO.*',
+          fixedStrings: true,
+          ignoreCase: true
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toContain('Line 2: hello.*');
+        expect(result[0]).not.toContain('Hello.World');
+        expect(result[0]).not.toContain('HELLO world');
       });
     });
   });

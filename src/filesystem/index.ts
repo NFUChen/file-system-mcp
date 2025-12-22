@@ -22,6 +22,7 @@ import {
   readFileContent,
   writeFileContent,
   searchFilesWithValidation,
+  searchFileContents,
   applyFileEdits,
   tailFile,
   headFile,
@@ -138,6 +139,22 @@ const SearchFilesArgsSchema = z.object({
 
 const GetFileInfoArgsSchema = z.object({
   path: z.string(),
+});
+
+const GrepContentArgsSchema = z.object({
+  path: z.string().describe("Directory or file to search in"),
+  pattern: z.string().describe("Regular expression pattern to search for"),
+  ignoreCase: z.boolean().optional().default(false).describe("Case-insensitive search"),
+  recursive: z.boolean().optional().default(true).describe("Search recursively in subdirectories"),
+  maxResults: z.number().optional().default(100).describe("Maximum number of results to return"),
+  context: z.number().optional().default(0).describe("Number of context lines before and after match"),
+  beforeContext: z.number().optional().describe("Number of context lines before each match"),
+  afterContext: z.number().optional().describe("Number of context lines after each match"),
+  filePattern: z.string().optional().describe("File pattern to filter (e.g., '*.js', '*.txt')"),
+  includeLineNumbers: z.boolean().optional().default(true).describe("Include line numbers in results"),
+  excludePatterns: z.array(z.string()).optional().default([]).describe("Patterns of files/directories to exclude"),
+  invertMatch: z.boolean().optional().default(false).describe("Select lines that do NOT match the pattern"),
+  fixedStrings: z.boolean().optional().default(false).describe("Treat pattern as literal text, not regex")
 });
 
 // Server setup
@@ -658,6 +675,67 @@ server.registerTool(
       content: [{ type: "text" as const, text }],
       structuredContent: { content: text }
     };
+  }
+);
+
+server.registerTool(
+  "grep_content",
+  {
+    title: "Search File Contents",
+    description:
+      "Search for text patterns within file contents using regular expressions. " +
+      "Can search recursively through directories and supports various options " +
+      "like case-insensitive matching, context lines, and file pattern filtering. " +
+      "Returns detailed results showing matching lines with optional context. " +
+      "Only works within allowed directories.",
+    inputSchema: {
+      path: z.string().describe("Directory or file to search in"),
+      pattern: z.string().describe("Regular expression pattern to search for"),
+      ignoreCase: z.boolean().optional().default(false).describe("Case-insensitive search"),
+      recursive: z.boolean().optional().default(true).describe("Search recursively in subdirectories"),
+      maxResults: z.number().optional().default(100).describe("Maximum number of results to return"),
+      context: z.number().optional().default(0).describe("Number of context lines before and after match"),
+      beforeContext: z.number().optional().describe("Number of context lines before each match"),
+      afterContext: z.number().optional().describe("Number of context lines after each match"),
+      filePattern: z.string().optional().describe("File pattern to filter (e.g., '*.js', '*.txt')"),
+      includeLineNumbers: z.boolean().optional().default(true).describe("Include line numbers in results"),
+      excludePatterns: z.array(z.string()).optional().default([]).describe("Patterns of files/directories to exclude"),
+      invertMatch: z.boolean().optional().default(false).describe("Select lines that do NOT match the pattern"),
+      fixedStrings: z.boolean().optional().default(false).describe("Treat pattern as literal text, not regex")
+    },
+    outputSchema: { content: z.string() },
+    annotations: { readOnlyHint: true }
+  },
+  async (args: z.infer<typeof GrepContentArgsSchema>) => {
+    try {
+      const results = await searchFileContents({
+        searchPath: args.path,
+        pattern: args.pattern,
+        ignoreCase: args.ignoreCase,
+        recursive: args.recursive,
+        maxResults: args.maxResults,
+        context: args.context,
+        beforeContext: args.beforeContext,
+        afterContext: args.afterContext,
+        filePattern: args.filePattern,
+        includeLineNumbers: args.includeLineNumbers,
+        excludePatterns: args.excludePatterns,
+        invertMatch: args.invertMatch,
+        fixedStrings: args.fixedStrings,
+      });
+
+      const text = results.length > 0
+        ? results.join('\n---\n')
+        : "No matches found";
+
+      return {
+        content: [{ type: "text" as const, text }],
+        structuredContent: { content: text }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(`Grep search failed: ${errorMessage}`);
+    }
   }
 );
 

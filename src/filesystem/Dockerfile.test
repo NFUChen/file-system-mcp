@@ -1,0 +1,31 @@
+FROM node:20-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Install build tools
+RUN apk add --no-cache python3 make g++
+
+# Create directory structure to match the extends path
+RUN mkdir -p /app/src/filesystem
+
+# Copy the root tsconfig that the filesystem tsconfig extends
+COPY tsconfig.json ./
+
+# Copy filesystem specific files (paths relative to servers/ directory)
+COPY src/filesystem/package.json ./src/filesystem/
+COPY src/filesystem/tsconfig.json ./src/filesystem/
+COPY src/filesystem/vitest.config.ts ./src/filesystem/
+
+# Copy source code (paths relative to servers/ directory)
+COPY src/filesystem/*.ts ./src/filesystem/
+COPY src/filesystem/__tests__/ ./src/filesystem/__tests__/
+
+# Change to filesystem directory
+WORKDIR /app/src/filesystem
+
+# Install dependencies and build
+RUN npm install
+
+# Run tests
+CMD ["npm", "test"]
