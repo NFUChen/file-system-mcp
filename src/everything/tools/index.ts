@@ -8,7 +8,6 @@ import { registerGetRootsListTool } from "./get-roots-list.js";
 import { registerGetStructuredContentTool } from "./get-structured-content.js";
 import { registerGetSumTool } from "./get-sum.js";
 import { registerGetTinyImageTool } from "./get-tiny-image.js";
-import { registerGZipFileAsResourceTool } from "./gzip-file-as-resource.js";
 import { registerToggleSimulatedLoggingTool } from "./toggle-simulated-logging.js";
 import { registerToggleSubscriberUpdatesTool } from "./toggle-subscriber-updates.js";
 import { registerTriggerElicitationRequestTool } from "./trigger-elicitation-request.js";
@@ -28,7 +27,6 @@ export const registerTools = (server: McpServer) => {
   registerGetStructuredContentTool(server);
   registerGetSumTool(server);
   registerGetTinyImageTool(server);
-  registerGZipFileAsResourceTool(server);
   registerToggleSimulatedLoggingTool(server);
   registerToggleSubscriberUpdatesTool(server);
   registerTriggerLongRunningOperationTool(server);
