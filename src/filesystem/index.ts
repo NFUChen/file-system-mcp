@@ -20,10 +20,8 @@ import {
   validatePath,
   getFileStats,
   readFileContent,
-  writeFileContent,
   searchFilesWithValidation,
   searchFileContents,
-  applyFileEdits,
   tailFile,
   headFile,
   setAllowedDirectories,
@@ -92,21 +90,7 @@ const ReadMultipleFilesArgsSchema = z.object({
     .describe("Array of file paths to read. Each path must be a string pointing to a valid file within allowed directories."),
 });
 
-const WriteFileArgsSchema = z.object({
-  path: z.string(),
-  content: z.string(),
-});
 
-const EditOperation = z.object({
-  oldText: z.string().describe('Text to search for - must match exactly'),
-  newText: z.string().describe('Text to replace with')
-});
-
-const EditFileArgsSchema = z.object({
-  path: z.string(),
-  edits: z.array(EditOperation),
-  dryRun: z.boolean().default(false).describe('Preview changes using git-style diff format')
-});
 
 const CreateDirectoryArgsSchema = z.object({
   path: z.string(),
@@ -334,60 +318,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
-  "write_file",
-  {
-    title: "Write File",
-    description:
-      "Create a new file or completely overwrite an existing file with new content. " +
-      "Use with caution as it will overwrite existing files without warning. " +
-      "Handles text content with proper encoding. Only works within allowed directories.",
-    inputSchema: {
-      path: z.string(),
-      content: z.string()
-    },
-    outputSchema: { content: z.string() },
-    annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: true }
-  },
-  async (args: z.infer<typeof WriteFileArgsSchema>) => {
-    const validPath = await validatePath(args.path);
-    await writeFileContent(validPath, args.content);
-    const text = `Successfully wrote to ${args.path}`;
-    return {
-      content: [{ type: "text" as const, text }],
-      structuredContent: { content: text }
-    };
-  }
-);
 
-server.registerTool(
-  "edit_file",
-  {
-    title: "Edit File",
-    description:
-      "Make line-based edits to a text file. Each edit replaces exact line sequences " +
-      "with new content. Returns a git-style diff showing the changes made. " +
-      "Only works within allowed directories.",
-    inputSchema: {
-      path: z.string(),
-      edits: z.array(z.object({
-        oldText: z.string().describe("Text to search for - must match exactly"),
-        newText: z.string().describe("Text to replace with")
-      })),
-      dryRun: z.boolean().default(false).describe("Preview changes using git-style diff format")
-    },
-    outputSchema: { content: z.string() },
-    annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true }
-  },
-  async (args: z.infer<typeof EditFileArgsSchema>) => {
-    const validPath = await validatePath(args.path);
-    const result = await applyFileEdits(validPath, args.edits, args.dryRun);
-    return {
-      content: [{ type: "text" as const, text: result }],
-      structuredContent: { content: result }
-    };
-  }
-);
 
 server.registerTool(
   "create_directory",
