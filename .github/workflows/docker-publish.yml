@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - feat/ripgrep
     tags:
       - 'v*'
   pull_request:
