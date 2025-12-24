@@ -262,6 +262,71 @@ export async function headFile(filePath: string, numLines: number): Promise<stri
   }
 }
 
+/**
+ * Prepares a glob pattern for plocate.
+ * Plocate supports shell glob patterns (*, ?, [chars]) directly and searches recursively by default.
+ * We only need to remove ** (since plocate doesn't support it and doesn't need it - it's recursive by default).
+ * 
+ * @param globPattern - The glob pattern to prepare
+ * @returns A pattern ready for plocate, or null if we should skip plocate for this pattern
+ */
+function preparePatternForPlocate(globPattern: string): string | null {
+  // Plocate supports basic shell glob patterns: *, ?, [chars]
+  // It does NOT support: ** (recursive), {a,b} (brace expansion), extended glob patterns
+
+  // First, try to convert ** patterns to equivalent plocate patterns
+  // **/pattern -> pattern (plocate is recursive by default)
+  // pattern/** -> pattern
+  // **/pattern/** -> pattern
+  let converted = globPattern
+    .replace(/^\*\*\/+/, '')      // Remove leading **/
+    .replace(/\/+\*\*$/, '')      // Remove trailing /**
+    .replace(/\*\*\/+/g, '')      // Remove **/ in the middle
+    .replace(/\/+\*\*/g, '');     // Remove /** in the middle
+
+  // Check for patterns that should cause fallback to recursive search
+  if (
+    converted.includes('**') ||   // Still has ** after conversion
+    converted.includes('{') ||    // Brace expansion {a,b}
+    converted.includes('!(') ||   // Extended glob !(pattern)
+    converted.includes('?(') ||   // Extended glob ?(pattern)
+    converted.includes('*(') ||   // Extended glob *(pattern)
+    converted.includes('+(') ||   // Extended glob +(pattern)
+    converted.includes('@(') ||   // Extended glob @(pattern)
+    converted === '' ||           // Empty pattern after conversion
+    converted === '/' ||          // Just slash
+    converted.startsWith('!') ||  // Negation patterns
+    converted.includes('\\')      // Escape sequences (complex)
+  ) {
+    return null;  // Fall back to recursive search
+  }
+
+  // For simple patterns (*.js, file?.txt, [abc]*), return the converted pattern
+  return converted;
+}
+
+/**
+ * Check if plocate is available and database exists
+ */
+async function isPlocateAvailable(): Promise<boolean> {
+  const plocateDb = process.env.PLOCATE_DB || '/var/lib/plocate/plocate.db';
+  
+  try {
+    // Check if database file exists
+    await fs.access(plocateDb);
+    
+    // Try to run plocate --version to check if it's installed
+    try {
+      await execFileAsync('plocate', ['--version'], { timeout: 5000 });
+      return true;
+    } catch {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+}
+
 export async function searchFilesWithValidation(
   rootPath: string,
   pattern: string,
@@ -271,8 +336,129 @@ export async function searchFilesWithValidation(
   const { excludePatterns = [] } = options;
   const results: string[] = [];
 
+  // Try to use plocate if available
+  const usePlocate = await isPlocateAvailable();
+  
+  if (usePlocate) {
+    // Plocate supports shell glob patterns (*, ?, [chars]) directly
+    // We only need to remove ** (since plocate is recursive by default)
+    // and check for unsupported syntax
+    const plocatePattern = preparePatternForPlocate(pattern);
+    
+    if (plocatePattern !== null) {
+      // Build plocate command variables outside try block for error handling
+      const plocateDb = process.env.PLOCATE_DB || '/var/lib/plocate/plocate.db';
+      const plocateArgs: string[] = ['--database', plocateDb, '--limit', '10000'];
+      const searchPattern = plocatePattern;
+      plocateArgs.push(searchPattern);
+
+      try {
+        
+        // Execute plocate
+        const { stdout } = await execFileAsync('plocate', plocateArgs, {
+          maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+          encoding: 'utf-8' as BufferEncoding,
+          timeout: 30000 // 30 second timeout
+        });
+        
+        // Parse results - plocate returns one path per line
+        const allPaths = stdout.split('\n')
+          .map((line: string) => line.trim())
+          .filter((line: string) => line.length > 0);
+
+        // Normalize root path once for efficient comparison
+        const normalizedRoot = normalizePath(rootPath);
+        const rootPathWithSlash = normalizedRoot.endsWith('/')
+          ? normalizedRoot
+          : normalizedRoot + '/';
+
+        // Filter results to be within rootPath and allowed directories
+        for (const filePath of allPaths) {
+          try {
+            // Normalize path for comparison
+            const normalizedPath = normalizePath(filePath);
+
+            // Early check: skip if path is not within rootPath
+            if (normalizedPath !== normalizedRoot && !normalizedPath.startsWith(rootPathWithSlash)) {
+              continue;
+            }
+            
+            // Validate path is within allowed directories
+            // This may throw, so we catch it below
+            try {
+              await validatePath(filePath);
+            } catch (validationError) {
+              // Skip paths that fail validation
+              continue;
+            }
+            
+            // Calculate relative path for pattern matching and exclusion
+            // Use the original rootPath and filePath (not normalized) for path.relative
+            // to ensure correct relative path calculation
+            const relativePath = path.relative(rootPath, filePath);
+            
+            // Apply exclude patterns
+            const shouldExclude = excludePatterns.some(excludePattern =>
+              minimatch(relativePath, excludePattern, { dot: true })
+            );
+
+            if (shouldExclude) continue;
+
+            // Trust plocate's pattern matching for supported patterns
+            // Since we've filtered to only send patterns that plocate supports,
+            // we don't need to double-check with minimatch
+            results.push(filePath);
+          } catch {
+            // Skip invalid paths
+            continue;
+          }
+        }
+        
+        return results;
+      } catch (error: any) {
+        // If plocate returns exit code 1, it means no matches found (this is normal)
+        if (error.code === 1) {
+          return [];
+        }
+
+        // Log detailed error information for debugging
+        const errorDetails = {
+          message: error.message,
+          code: error.code,
+          pattern: searchPattern,
+          rootPath: rootPath,
+          command: `plocate ${plocateArgs.join(' ')}`
+        };
+
+        // Different handling based on error type
+        if (error.code === 127) {
+          // Command not found - plocate not installed
+          console.error(`Plocate command not found, falling back to recursive search`);
+        } else if (error.message?.includes('timeout')) {
+          // Timeout error
+          console.error(`Plocate search timed out for pattern "${searchPattern}", falling back to recursive search`);
+        } else if (error.message?.includes('database')) {
+          // Database-related error
+          console.error(`Plocate database error: ${error.message}, falling back to recursive search`);
+        } else {
+          // General error with more context
+          console.error(`Plocate search failed, falling back to recursive search:`, errorDetails);
+        }
+      }
+    }
+    // If plocatePattern is null, fall through to recursive search below
+  }
+  
+  // Fallback to original recursive search method (used when plocate is not available
+  // or when pattern conversion returns null)
   async function search(currentPath: string) {
     const entries = await fs.readdir(currentPath, { withFileTypes: true });
+
+    // Defensive check in case entries is not iterable (e.g., due to mocking issues)
+    if (!Array.isArray(entries)) {
+      console.warn('fs.readdir returned non-iterable result:', entries);
+      return;
+    }
 
     for (const entry of entries) {
       const fullPath = path.join(currentPath, entry.name);

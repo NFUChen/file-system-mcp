@@ -304,6 +304,16 @@ describe('Lib Functions', () => {
     describe('searchFilesWithValidation', () => {
       beforeEach(() => {
         mockFs.realpath.mockImplementation(async (path: any) => path.toString());
+        // Ensure plocate is not available by default for non-plocate tests
+        // by mocking access to fail for plocate database check
+        mockFs.access.mockImplementation(async (path: string) => {
+          // Fail if it's checking for plocate database
+          if (path.includes('plocate.db') || path.includes('/var/lib/plocate')) {
+            throw new Error('ENOENT');
+          }
+          // Allow other access checks
+          return undefined;
+        });
       });
 
 
@@ -395,6 +405,338 @@ describe('Lib Functions', () => {
           '/allowed/dir/important_test.js'
         ];
         expect(result).toEqual(expectedResults);
+      });
+
+      describe('plocate integration', () => {
+        const originalEnv = process.env.PLOCATE_DB;
+        const testDir = process.platform === 'win32' ? 'C:\\allowed\\dir' : '/allowed/dir';
+        const allowedDirs = process.platform === 'win32' ? ['C:\\allowed'] : ['/allowed'];
+        const plocateDb = '/var/lib/plocate/plocate.db';
+
+        beforeEach(() => {
+          // Reset environment
+          delete process.env.PLOCATE_DB;
+          vi.clearAllMocks();
+          mockFs.realpath.mockImplementation(async (path: any) => path.toString());
+        });
+
+        afterEach(() => {
+          // Restore original environment
+          if (originalEnv) {
+            process.env.PLOCATE_DB = originalEnv;
+          } else {
+            delete process.env.PLOCATE_DB;
+          }
+        });
+
+        it('uses plocate when available and database exists', async () => {
+          // Mock plocate as available
+          process.env.PLOCATE_DB = plocateDb;
+          // First call: check database exists, second call: check plocate version
+          mockFs.access.mockResolvedValueOnce(undefined); // Database exists
+          mockExecFile.mockImplementation((cmd: string, args: string[], options: any, callback: any) => {
+            if (cmd === 'plocate' && args && args.includes('--version')) {
+              // plocate --version check succeeds
+              callback(null, { stdout: 'plocate 1.1.18\n', stderr: '' });
+            } else if (cmd === 'plocate' && args && args.includes('*.js')) {
+              // plocate search returns results
+              const results = process.platform === 'win32' 
+                ? 'C:\\allowed\\dir\\file1.js\nC:\\allowed\\dir\\subdir\\file2.js\n'
+                : '/allowed/dir/file1.js\n/allowed/dir/subdir/file2.js\n';
+              callback(null, { stdout: results, stderr: '' });
+            } else {
+              callback(null, { stdout: '', stderr: '' });
+            }
+          });
+          // Mock realpath for validation
+          mockFs.realpath.mockImplementation(async (path: any) => path.toString());
+
+          const result = await searchFilesWithValidation(
+            testDir,
+            '*.js',
+            allowedDirs,
+            {}
+          );
+
+          // Should use plocate and return filtered results
+          expect(mockExecFile).toHaveBeenCalledWith(
+            'plocate',
+            expect.arrayContaining(['--database', plocateDb]),
+            expect.any(Object),
+            expect.any(Function)
+          );
+          
+          const expectedResults = process.platform === 'win32' ? [
+            'C:\\allowed\\dir\\file1.js',
+            'C:\\allowed\\dir\\subdir\\file2.js'
+          ] : [
+            '/allowed/dir/file1.js',
+            '/allowed/dir/subdir/file2.js'
+          ];
+          expect(result).toEqual(expectedResults);
+        });
+
+        it('removes ** from patterns for plocate (plocate is recursive by default)', async () => {
+          process.env.PLOCATE_DB = plocateDb;
+          mockFs.access.mockResolvedValueOnce(undefined);
+          mockExecFile.mockImplementation((cmd: string, args: string[], options: any, callback: any) => {
+            if (cmd === 'plocate' && args && args.includes('--version')) {
+              callback(null, { stdout: 'plocate 1.1.18\n', stderr: '' });
+            } else if (cmd === 'plocate' && args) {
+              // Check that ** was removed from the pattern
+              const patternArg = args[args.length - 1];
+              expect(patternArg).not.toContain('**');
+              expect(patternArg).toBe('*.js'); // **/*.js should become *.js
+              
+              const results = process.platform === 'win32'
+                ? 'C:\\allowed\\dir\\file.js\n'
+                : '/allowed/dir/file.js\n';
+              callback(null, { stdout: results, stderr: '' });
+            } else {
+              callback(null, { stdout: '', stderr: '' });
+            }
+          });
+
+          await searchFilesWithValidation(
+            testDir,
+            '**/*.js', // Pattern with **
+            allowedDirs,
+            {}
+          );
+
+          // Verify plocate was called with pattern without **
+          expect(mockExecFile).toHaveBeenCalledWith(
+            'plocate',
+            expect.arrayContaining([expect.not.stringContaining('**')]),
+            expect.any(Object),
+            expect.any(Function)
+          );
+        });
+
+        it('filters plocate results by rootPath', async () => {
+          process.env.PLOCATE_DB = plocateDb;
+          mockFs.access.mockResolvedValueOnce(undefined);
+          mockExecFile.mockImplementation((cmd: string, args: string[], options: any, callback: any) => {
+            if (cmd === 'plocate' && args && args.includes('--version')) {
+              callback(null, { stdout: 'plocate 1.1.18\n', stderr: '' });
+            } else if (cmd === 'plocate') {
+              // Return results from multiple directories, but only some are in rootPath
+              const results = process.platform === 'win32'
+                ? 'C:\\allowed\\dir\\file1.js\nC:\\allowed\\other\\file2.js\nC:\\allowed\\dir\\subdir\\file3.js\n'
+                : '/allowed/dir/file1.js\n/allowed/other/file2.js\n/allowed/dir/subdir/file3.js\n';
+              callback(null, { stdout: results, stderr: '' });
+            } else {
+              callback(null, { stdout: '', stderr: '' });
+            }
+          });
+          // Mock realpath for validation
+          mockFs.realpath.mockImplementation(async (path: any) => path.toString());
+
+          const result = await searchFilesWithValidation(
+            testDir,
+            '*.js',
+            allowedDirs,
+            {}
+          );
+
+          // Should only return files within testDir
+          const expectedResults = process.platform === 'win32' ? [
+            'C:\\allowed\\dir\\file1.js',
+            'C:\\allowed\\dir\\subdir\\file3.js'
+          ] : [
+            '/allowed/dir/file1.js',
+            '/allowed/dir/subdir/file3.js'
+          ];
+          expect(result).toEqual(expectedResults);
+        });
+
+        it('applies excludePatterns to plocate results', async () => {
+          process.env.PLOCATE_DB = plocateDb;
+          mockFs.access.mockResolvedValueOnce(undefined);
+          mockExecFile.mockImplementation((cmd: string, args: string[], options: any, callback: any) => {
+            if (cmd === 'plocate' && args && args.includes('--version')) {
+              callback(null, { stdout: 'plocate 1.1.18\n', stderr: '' });
+            } else if (cmd === 'plocate') {
+              const results = process.platform === 'win32'
+                ? 'C:\\allowed\\dir\\file1.js\nC:\\allowed\\dir\\file1.test.js\nC:\\allowed\\dir\\file2.js\n'
+                : '/allowed/dir/file1.js\n/allowed/dir/file1.test.js\n/allowed/dir/file2.js\n';
+              callback(null, { stdout: results, stderr: '' });
+            } else {
+              callback(null, { stdout: '', stderr: '' });
+            }
+          });
+          // Mock realpath for validation
+          mockFs.realpath.mockImplementation(async (path: any) => path.toString());
+
+          const result = await searchFilesWithValidation(
+            testDir,
+            '*.js',
+            allowedDirs,
+            { excludePatterns: ['*.test.js'] }
+          );
+
+          // Should exclude files matching excludePatterns
+          const expectedResults = process.platform === 'win32' ? [
+            'C:\\allowed\\dir\\file1.js',
+            'C:\\allowed\\dir\\file2.js'
+          ] : [
+            '/allowed/dir/file1.js',
+            '/allowed/dir/file2.js'
+          ];
+          expect(result).toEqual(expectedResults);
+        });
+
+        it('falls back to recursive search when plocate database does not exist', async () => {
+          // Don't set PLOCATE_DB, or mock access to fail
+          mockFs.access.mockRejectedValueOnce(new Error('ENOENT')); // Database doesn't exist
+          
+          const mockEntries = [
+            { name: 'file.js', isDirectory: () => false }
+          ];
+          mockFs.readdir.mockResolvedValueOnce(mockEntries as any);
+
+          const result = await searchFilesWithValidation(
+            testDir,
+            '*.js',
+            allowedDirs,
+            {}
+          );
+
+          // Should use recursive search (readdir) instead of plocate
+          expect(mockFs.readdir).toHaveBeenCalled();
+          const expectedResult = process.platform === 'win32' 
+            ? 'C:\\allowed\\dir\\file.js' 
+            : '/allowed/dir/file.js';
+          expect(result).toEqual([expectedResult]);
+        });
+
+        it('falls back to recursive search when plocate command fails', async () => {
+          process.env.PLOCATE_DB = plocateDb;
+          mockFs.access.mockResolvedValueOnce(undefined);
+          mockExecFile.mockImplementation((cmd: string, args: string[], options: any, callback: any) => {
+            if (cmd === 'plocate' && args && args.includes('--version')) {
+              // plocate --version check succeeds
+              callback(null, { stdout: 'plocate 1.1.18\n', stderr: '' });
+            } else if (cmd === 'plocate') {
+              // plocate search fails
+              const error = new Error('plocate failed') as any;
+              error.code = 2;
+              callback(error, { stdout: '', stderr: 'plocate error' });
+            } else {
+              callback(null, { stdout: '', stderr: '' });
+            }
+          });
+
+          const mockEntries = [
+            { name: 'file.js', isDirectory: () => false }
+          ];
+          mockFs.readdir.mockResolvedValueOnce(mockEntries as any);
+
+          const result = await searchFilesWithValidation(
+            testDir,
+            '*.js',
+            allowedDirs,
+            {}
+          );
+
+          // Should fall back to recursive search
+          expect(mockFs.readdir).toHaveBeenCalled();
+          const expectedResult = process.platform === 'win32' 
+            ? 'C:\\allowed\\dir\\file.js' 
+            : '/allowed/dir/file.js';
+          expect(result).toEqual([expectedResult]);
+        });
+
+        it('falls back to recursive search when pattern conversion returns null', async () => {
+          process.env.PLOCATE_DB = plocateDb;
+          // Mock access for plocate database check
+          // isPlocateAvailable calls fs.access(plocateDb) to check if database exists
+          // Then it calls execFile for plocate --version
+          let accessCallCount = 0;
+          mockFs.access.mockImplementation(async (path: string) => {
+            accessCallCount++;
+            // First call should be for plocate database
+            if (path === plocateDb || path.includes('plocate.db')) {
+              return undefined; // Database exists
+            }
+            // For other paths (like validatePath), allow access
+            return undefined;
+          });
+          mockExecFile.mockImplementation((cmd: string, args: string[], options: any, callback: any) => {
+            if (cmd === 'plocate' && args && args.includes('--version')) {
+              // This is called by isPlocateAvailable
+              callback(null, { stdout: 'plocate 1.1.18\n', stderr: '' });
+            } else {
+              callback(null, { stdout: '', stderr: '' });
+            }
+          });
+
+          const mockEntries = [
+            { name: 'file.js', isDirectory: () => false }
+          ];
+          // Mock readdir to return entries - this should be called when falling back to recursive search
+          // Use mockResolvedValue instead of mockResolvedValueOnce to handle potential multiple calls
+          mockFs.readdir.mockResolvedValue(mockEntries as any);
+          // Mock realpath for validation - called by validatePath
+          mockFs.realpath.mockImplementation(async (path: any) => {
+            const pathStr = path.toString();
+            // Return the path as-is for validation to pass
+            return pathStr;
+          });
+
+          // Use a pattern that results in null after conversion (empty after removing **)
+          // When pattern is '**', preparePatternForPlocate returns null because after removing **, it's empty
+          // This should cause the code to skip plocate and use recursive search
+          const result = await searchFilesWithValidation(
+            testDir,
+            '**', // This becomes empty after removing **, so preparePatternForPlocate returns null
+            allowedDirs,
+            {}
+          );
+
+          // Should fall back to recursive search since plocatePattern is null
+          // Pattern '**' matches everything, so we should get the file
+          // Note: isPlocateAvailable will return true, but preparePatternForPlocate('**') returns null
+          // so we should skip plocate and use recursive search
+          expect(mockFs.readdir).toHaveBeenCalled();
+          const expectedResult = process.platform === 'win32' 
+            ? 'C:\\allowed\\dir\\file.js' 
+            : '/allowed/dir/file.js';
+          // Pattern '**' should match everything, including files in subdirectories
+          expect(result.length).toBeGreaterThan(0);
+          expect(result).toContain(expectedResult);
+        });
+
+        it('handles plocate returning no matches (exit code 1)', async () => {
+          process.env.PLOCATE_DB = plocateDb;
+          mockFs.access.mockResolvedValueOnce(undefined);
+          mockExecFile.mockImplementation((cmd: string, args: string[], options: any, callback: any) => {
+            if (cmd === 'plocate' && args && args.includes('--version')) {
+              callback(null, { stdout: 'plocate 1.1.18\n', stderr: '' });
+            } else if (cmd === 'plocate') {
+              // plocate returns exit code 1 for no matches (this is normal)
+              const error = new Error('No matches') as any;
+              error.code = 1;
+              callback(error, { stdout: '', stderr: '' });
+            } else {
+              callback(null, { stdout: '', stderr: '' });
+            }
+          });
+          // Mock realpath for validation (won't be called but good to have)
+          mockFs.realpath.mockImplementation(async (path: any) => path.toString());
+
+          const result = await searchFilesWithValidation(
+            testDir,
+            '*.nonexistent',
+            allowedDirs,
+            {}
+          );
+
+          // Should return empty array, not fall back (exit code 1 is expected for no matches)
+          expect(result).toEqual([]);
+          // Should not have called readdir (didn't fall back)
+          expect(mockFs.readdir).not.toHaveBeenCalled();
+        });
       });
     });
 

@@ -12,8 +12,8 @@ RUN --mount=type=cache,target=/root/.npm-production npm ci --ignore-scripts --om
 
 FROM node:22-alpine AS release
 
-# Install ripgrep
-RUN apk add --no-cache ripgrep
+# Install ripgrep and plocate
+RUN apk add --no-cache ripgrep plocate
 
 WORKDIR /app
 
@@ -21,8 +21,16 @@ COPY --from=builder /app/dist /app/dist
 COPY --from=builder /app/package.json /app/package.json
 COPY --from=builder /app/package-lock.json /app/package-lock.json
 
+# Copy entrypoint script
+COPY src/filesystem/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Create directory for plocate database
+RUN mkdir -p /var/lib/plocate && chmod 755 /var/lib/plocate
+
 ENV NODE_ENV=production
+ENV PLOCATE_DB=/var/lib/plocate/plocate.db
 
 RUN npm ci --ignore-scripts --omit-dev
 
-ENTRYPOINT ["node", "/app/dist/index.js"]
+ENTRYPOINT ["/entrypoint.sh"]

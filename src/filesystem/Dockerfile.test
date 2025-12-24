@@ -3,8 +3,8 @@ FROM node:20-alpine
 # Set working directory
 WORKDIR /app
 
-# Install build tools and ripgrep
-RUN apk add --no-cache python3 make g++ ripgrep
+# Install build tools, ripgrep, and plocate (for testing plocate integration)
+RUN apk add --no-cache python3 make g++ ripgrep plocate
 
 # Create directory structure to match the extends path
 RUN mkdir -p /app/src/filesystem

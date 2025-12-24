@@ -8,6 +8,8 @@ REPO_NAME ?= modelcontextprotocol/servers
 TAG ?= $(VERSION)
 FULL_IMAGE_NAME = $(REGISTRY)/$(REPO_NAME)/$(IMAGE_NAME)
 DOCKERFILE = src/filesystem/Dockerfile
+DOCKERFILE_TEST = src/filesystem/Dockerfile.test
+TEST_IMAGE_NAME = $(IMAGE_NAME)-test
 BUILD_CONTEXT = .
 
 # Default target
@@ -75,7 +77,33 @@ run: ## Run the Docker container
 	docker run --rm -it $(FULL_IMAGE_NAME):$(TAG)
 
 .PHONY: test
-test: build ## Build and test the image
+test: test-docker ## Alias for test-docker
+
+.PHONY: test-docker
+test-docker: ## Run tests using Dockerfile.test
+	@echo "Building test image..."
+	docker build \
+		--file $(DOCKERFILE_TEST) \
+		--tag $(TEST_IMAGE_NAME):latest \
+		--network host \
+		$(BUILD_CONTEXT)
+	@echo "Running tests..."
+	docker run --rm $(TEST_IMAGE_NAME):latest
+
+.PHONY: test-docker-no-cache
+test-docker-no-cache: ## Run tests using Dockerfile.test without cache
+	@echo "Building test image (no cache)..."
+	docker build \
+		--no-cache \
+		--file $(DOCKERFILE_TEST) \
+		--tag $(TEST_IMAGE_NAME):latest \
+		--network host \
+		$(BUILD_CONTEXT)
+	@echo "Running tests..."
+	docker run --rm $(TEST_IMAGE_NAME):latest
+
+.PHONY: test-image
+test-image: build ## Test the production image
 	@echo "Testing $(FULL_IMAGE_NAME):$(TAG)..."
 	docker run --rm $(FULL_IMAGE_NAME):$(TAG) --version || true
 
@@ -84,6 +112,7 @@ clean: ## Remove local Docker images
 	@echo "Removing local images..."
 	-docker rmi $(FULL_IMAGE_NAME):$(TAG) 2>/dev/null || true
 	-docker rmi $(FULL_IMAGE_NAME):latest 2>/dev/null || true
+	-docker rmi $(TEST_IMAGE_NAME):latest 2>/dev/null || true
 	@echo "Clean complete"
 
 .PHONY: clean-all
@@ -102,4 +131,3 @@ version: ## Show the current version
 	@echo "Version: $(VERSION)"
 	@echo "Tag: $(TAG)"
 	@echo "Image: $(FULL_IMAGE_NAME):$(TAG)"
-
