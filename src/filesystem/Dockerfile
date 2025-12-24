@@ -12,6 +12,9 @@ RUN --mount=type=cache,target=/root/.npm-production npm ci --ignore-scripts --om
 
 FROM node:22-alpine AS release
 
+# Install ripgrep
+RUN apk add --no-cache ripgrep
+
 WORKDIR /app
 
 COPY --from=builder /app/dist /app/dist

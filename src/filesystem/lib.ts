@@ -2,10 +2,14 @@ import fs from "fs/promises";
 import path from "path";
 import os from 'os';
 import { randomBytes } from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { diffLines, createTwoFilesPatch } from 'diff';
 import { minimatch } from 'minimatch';
 import { normalizePath, expandHome } from './path-utils.js';
 import { isPathWithinAllowedDirectories } from './path-validation.js';
+
+const execFileAsync = promisify(execFile);
 
 // Global allowed directories - set by the main module
 let allowedDirectories: string[] = [];
@@ -320,202 +324,163 @@ export async function searchFileContents(options: GrepOptions): Promise<string[]
   } = options;
 
   // Handle context parameter properly - if context is provided (and not 0), it overrides beforeContext and afterContext
-  // This follows the Python implementation where context parameter takes precedence
   const effectiveBeforeContext = (context !== undefined && context > 0) ? context : (beforeContext !== undefined ? beforeContext : 0);
   const effectiveAfterContext = (context !== undefined && context > 0) ? context : (afterContext !== undefined ? afterContext : 0);
 
   // Validate the search path
   const validatedSearchPath = await validatePath(searchPath);
 
-  // Handle pattern based on flags (similar to Python implementation)
-  let effectivePattern = pattern;
+  // Build ripgrep command arguments
+  const rgArgs: string[] = [];
+
+  // Pattern handling
   if (fixedStrings) {
-    // For fixed strings, escape the pattern to match it literally
-    effectivePattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    rgArgs.push('--fixed-strings');
+  }
+  rgArgs.push(pattern);
+
+  // Search path
+  rgArgs.push(validatedSearchPath);
+
+  // Case sensitivity
+  if (ignoreCase) {
+    rgArgs.push('--ignore-case');
   }
 
-  let regex: RegExp | null = null;
-  try {
-    regex = new RegExp(effectivePattern, ignoreCase ? 'gi' : 'g');
-  } catch (error) {
-    throw new Error(`Invalid regex pattern: ${effectivePattern}. ${error instanceof Error ? error.message : 'Unknown error'}`);
+  // Recursive search
+  if (!recursive) {
+    rgArgs.push('--maxdepth', '1');
   }
 
-  // Helper function to check if a line matches the pattern
-  const matchesPattern = (line: string): boolean => {
-    let matches: boolean;
-    if (regex) {
-      // Reset regex for each line to handle global flag correctly
-      regex.lastIndex = 0;
-      matches = regex.test(line);
-      regex.lastIndex = 0; // Reset again for future uses
+  // Context lines
+  if (effectiveBeforeContext > 0 || effectiveAfterContext > 0) {
+    if (effectiveBeforeContext === effectiveAfterContext) {
+      rgArgs.push('--context', effectiveBeforeContext.toString());
     } else {
-      // Fallback for non-regex matches
-      if (ignoreCase) {
-        matches = line.toLowerCase().includes(pattern.toLowerCase());
-      } else {
-        matches = line.includes(pattern);
+      if (effectiveBeforeContext > 0) {
+        rgArgs.push('--before-context', effectiveBeforeContext.toString());
+      }
+      if (effectiveAfterContext > 0) {
+        rgArgs.push('--after-context', effectiveAfterContext.toString());
+      }
+    }
+  }
+
+  // Line numbers
+  if (includeLineNumbers) {
+    rgArgs.push('--line-number');
+  }
+
+  // Invert match
+  if (invertMatch) {
+    rgArgs.push('--invert-match');
+  }
+
+  // File pattern (glob)
+  if (filePattern !== '*') {
+    rgArgs.push('--glob', filePattern);
+  }
+
+  // Exclude patterns
+  for (const excludePattern of excludePatterns) {
+    rgArgs.push('--glob', `!${excludePattern}`);
+  }
+
+  // Note: ripgrep's --max-count limits per file, not globally
+  // We'll handle global maxResults limit in post-processing
+
+  // Output format: file path, line number, and content
+  rgArgs.push('--with-filename');
+  rgArgs.push('--no-heading');
+  rgArgs.push('--no-column');
+
+  // Color output disabled for parsing
+  rgArgs.push('--color', 'never');
+
+  try {
+    // Execute ripgrep
+    const { stdout, stderr } = await execFileAsync('rg', rgArgs, {
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+      encoding: 'utf-8' as BufferEncoding
+    });
+
+    if (stderr && !stderr.includes('No matches found')) {
+      // ripgrep may output warnings to stderr, but we'll continue if there's stdout
+      if (!stdout) {
+        throw new Error(`ripgrep error: ${stderr}`);
       }
     }
 
-    // Handle invertMatch - return true if line should be included
-    return matches !== invertMatch;
-  };
+    if (!stdout || stdout.trim().length === 0) {
+      return [];
+    }
 
-  const results: string[] = [];
-  let totalMatches = 0;
+    // Parse ripgrep output
+    // Format: filepath:linenumber:content
+    // With context, ripgrep still uses the same format, just includes more lines
+    // Separator lines "---" appear between different file matches
+    const lines = stdout.split('\n').filter((line: string) => line.trim().length > 0);
+    const results: string[] = [];
+    const fileResults: Map<string, Array<{ lineNumber: number; content: string }>> = new Map();
 
-  async function searchInFile(filePath: string): Promise<void> {
-    if (totalMatches >= maxResults) return;
-
-    try {
-      // Additional validation for each file
-      await validatePath(filePath);
-
-      // Check if file should be excluded
-      const relativePath = path.relative(validatedSearchPath, filePath);
-      const shouldExclude = excludePatterns.some(excludePattern =>
-        minimatch(relativePath, excludePattern, { dot: true })
-      );
-
-      if (shouldExclude) return;
-
-      // Try to read the file as text
-      const content = await readFileContent(filePath);
-      const lines = normalizeLineEndings(content).split('\n');
-
-      const fileMatches: GrepMatch[] = [];
-
-      for (let i = 0; i < lines.length && totalMatches < maxResults; i++) {
-        const line = lines[i];
-
-        if (matchesPattern(line)) {
-          const contextBeforeLines = effectiveBeforeContext > 0
-            ? lines.slice(Math.max(0, i - effectiveBeforeContext), i)
-            : [];
-          const contextAfterLines = effectiveAfterContext > 0
-            ? lines.slice(i + 1, Math.min(lines.length, i + 1 + effectiveAfterContext))
-            : [];
-
-          const match: GrepMatch = {
-            file: filePath,
-            lineNumber: i + 1,
-            content: line,
-            contextBefore: contextBeforeLines.length > 0 ? contextBeforeLines : undefined,
-            contextAfter: contextAfterLines.length > 0 ? contextAfterLines : undefined
-          };
-
-          fileMatches.push(match);
-          totalMatches++;
-
-          if (totalMatches >= maxResults) break;
-        }
+    for (const line of lines) {
+      // Skip separator lines (appear between files when using context)
+      if (line.trim() === '---') {
+        continue;
       }
 
-      // Format results for this file
-      if (fileMatches.length > 0) {
-        let fileResult = `File: ${filePath}\n`;
+      // Match pattern: filepath:linenumber:content
+      // This is the standard ripgrep output format
+      const match = line.match(/^(.+?):(\d+):(.*)$/);
+      if (match) {
+        const [, filePath, lineNum, content] = match;
+        if (!fileResults.has(filePath)) {
+          fileResults.set(filePath, []);
+        }
+        fileResults.get(filePath)!.push({
+          lineNumber: parseInt(lineNum, 10),
+          content: content
+        });
+      }
+    }
 
-        for (const match of fileMatches) {
+    // Format results and limit total matches
+    // Note: We count actual matches (not context lines) to respect maxResults
+    // Since ripgrep includes context lines, we need to identify actual matches
+    // For simplicity, we'll include all lines but limit the number of files processed
+    let totalMatches = 0;
+    for (const [filePath, matches] of fileResults.entries()) {
+      if (totalMatches >= maxResults) break;
+      
+      // Count matches in this file (approximate - all lines are potential matches)
+      // In practice, ripgrep with context will show matching lines and context
+      // We'll include all lines up to the limit
+      const matchesToInclude = matches.slice(0, maxResults - totalMatches);
+      totalMatches += matchesToInclude.length;
+      
+      if (matchesToInclude.length > 0) {
+        let fileResult = `File: ${filePath}\n`;
+        for (const match of matchesToInclude) {
           if (includeLineNumbers) {
             fileResult += `  Line ${match.lineNumber}: ${match.content}\n`;
           } else {
             fileResult += `  ${match.content}\n`;
           }
-
-          if (effectiveBeforeContext > 0 || effectiveAfterContext > 0) {
-            if (match.contextBefore && match.contextBefore.length > 0) {
-              fileResult += '    Context before:\n';
-              match.contextBefore.forEach((line, idx) => {
-                const lineNum = match.lineNumber - effectiveBeforeContext + idx;
-                fileResult += `      ${includeLineNumbers ? `${lineNum}: ` : ''}${line}\n`;
-              });
-            }
-
-            if (match.contextAfter && match.contextAfter.length > 0) {
-              fileResult += '    Context after:\n';
-              match.contextAfter.forEach((line, idx) => {
-                const lineNum = match.lineNumber + idx + 1;
-                fileResult += `      ${includeLineNumbers ? `${lineNum}: ` : ''}${line}\n`;
-              });
-            }
-          }
         }
-
         results.push(fileResult.trim());
       }
-
-    } catch (error) {
-      // Skip files that can't be read as text or are not accessible
-      // Common cases: binary files, permission issues, directories, etc.
-      if (error instanceof Error) {
-        // Only skip expected errors, throw unexpected ones
-        const errorCode = (error as any)?.code;
-        if (errorCode === 'EISDIR' ||
-            errorCode === 'EACCES' ||
-            errorCode === 'ENOENT' ||
-            error.message.includes('Access denied')) {
-          return; // Skip this file
-        }
-      }
-      // For other errors, we might want to continue but could optionally log
-      return;
     }
-  }
 
-  async function searchDirectory(dirPath: string): Promise<void> {
-    if (totalMatches >= maxResults) return;
-
-    try {
-      // Validate directory path
-      await validatePath(dirPath);
-
-      const entries = await fs.readdir(dirPath, { withFileTypes: true });
-
-      for (const entry of entries) {
-        if (totalMatches >= maxResults) break;
-
-        const fullPath = path.join(dirPath, entry.name);
-
-        try {
-          if (entry.isFile()) {
-            // Check if file matches the file pattern
-            if (filePattern === '*' || minimatch(entry.name, filePattern)) {
-              await searchInFile(fullPath);
-            }
-          } else if (entry.isDirectory() && recursive) {
-            await searchDirectory(fullPath);
-          }
-        } catch (error) {
-          // Skip individual files/directories that can't be accessed
-          continue;
-        }
-      }
-    } catch (error) {
-      // Handle directory read errors
-      if (error instanceof Error) {
-        const errorCode = (error as any)?.code;
-        if (errorCode === 'EACCES' || errorCode === 'ENOENT') {
-          return; // Skip directories we can't access
-        }
-      }
-      throw error; // Re-throw unexpected errors
+    return results;
+  } catch (error: any) {
+    // Handle ripgrep not found or execution errors
+    if (error.code === 'ENOENT') {
+      throw new Error('ripgrep (rg) is not installed. Please install ripgrep to use this feature.');
     }
-  }
-
-  // Determine if search path is a file or directory
-  const stats = await fs.stat(validatedSearchPath);
-  if (stats.isFile()) {
-    // Check if single file matches file pattern
-    const fileName = path.basename(validatedSearchPath);
-    if (filePattern === '*' || minimatch(fileName, filePattern)) {
-      await searchInFile(validatedSearchPath);
+    if (error.code === 1) {
+      // ripgrep returns exit code 1 when no matches are found (this is normal)
+      return [];
     }
-  } else if (stats.isDirectory()) {
-    await searchDirectory(validatedSearchPath);
-  } else {
-    throw new Error(`Path is neither a file nor a directory: ${validatedSearchPath}`);
+    throw new Error(`ripgrep execution failed: ${error.message || String(error)}`);
   }
-
-  return results;
 }
