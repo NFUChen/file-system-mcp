@@ -144,19 +144,9 @@ The server's directory access control follows this flow:
   - Glob-style pattern matching
   - Returns full paths to matches
 
-- **directory_tree**
-  - Get recursive JSON tree structure of directory contents
-  - Inputs:
-    - `path` (string): Starting directory
-    - `excludePatterns` (string[]): Exclude any patterns. Glob formats are supported.
-  - Returns:
-    - JSON array where each entry contains:
-      - `name` (string): File/directory name
-      - `type` ('file'|'directory'): Entry type
-      - `children` (array): Present only for directories
-        - Empty array for empty directories
-        - Omitted for files
-  - Output is formatted with 2-space indentation for readability
+- **directory_tree** (DISABLED)
+  - This tool has been disabled due to performance issues with large projects
+  - For directory exploration, use `list_directory` or `search_files` instead
     
 - **get_file_info**
   - Get detailed file/directory metadata
@@ -193,7 +183,7 @@ The mapping for filesystem tools is:
 | `read_multiple_files`       | `true`       | –              | –               | Pure read                                       |
 | `list_directory`            | `true`       | –              | –               | Pure read                                       |
 | `list_directory_with_sizes` | `true`       | –              | –               | Pure read                                       |
-| `directory_tree`            | `true`       | –              | –               | Pure read                                       |
+| `directory_tree`            | –            | –              | –               | **DISABLED** (performance issues)              |
 | `search_files`              | `true`       | –              | –               | Pure read                                       |
 | `get_file_info`             | `true`       | –              | –               | Pure read                                       |
 | `list_allowed_directories`  | `true`       | –              | –               | Pure read                                       |
