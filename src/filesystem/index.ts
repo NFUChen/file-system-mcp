@@ -25,6 +25,7 @@ import {
   tailFile,
   headFile,
   setAllowedDirectories,
+  extractProjectIntro,
 } from './lib.js';
 
 // Command line argument parsing
@@ -139,6 +140,11 @@ const GrepContentArgsSchema = z.object({
   excludePatterns: z.array(z.string()).optional().default([]).describe("Patterns of files/directories to exclude"),
   invertMatch: z.boolean().optional().default(false).describe("Select lines that do NOT match the pattern"),
   fixedStrings: z.boolean().optional().default(false).describe("Treat pattern as literal text, not regex")
+});
+
+const ExtractProjectIntroArgsSchema = z.object({
+  path: z.string().describe("Root path of the project to extract introduction from"),
+  includeAdditionalFiles: z.boolean().optional().default(true).describe("Whether to include additional common documentation files (CONTRIBUTING.md, ARCHITECTURE.md, etc.)")
 });
 
 // Server setup
@@ -688,6 +694,46 @@ server.registerTool(
     return {
       content: [{ type: "text" as const, text }],
       structuredContent: { content: text }
+    };
+  }
+);
+
+server.registerTool(
+  "extract_project_intro",
+  {
+    title: "Extract Project Introduction",
+    description:
+      "Extract project introduction from common documentation files. " +
+      "This tool looks for files like CLAUDE.md, README.md, and optionally other common " +
+      "documentation files (CONTRIBUTING.md, ARCHITECTURE.md, DESIGN.md, etc.) to provide " +
+      "a comprehensive introduction to a project. If multiple files are found, they are " +
+      "combined with clear separators. This is useful for quickly understanding what a " +
+      "project is about before diving into the codebase. Only works within allowed directories.",
+    inputSchema: {
+      path: z.string().describe("Root path of the project to extract introduction from"),
+      includeAdditionalFiles: z.boolean().optional().default(true).describe("Whether to include additional common documentation files (CONTRIBUTING.md, ARCHITECTURE.md, etc.)")
+    },
+    outputSchema: {
+      content: z.string(),
+      filesFound: z.array(z.string()),
+      filesChecked: z.array(z.string())
+    },
+    annotations: { readOnlyHint: true }
+  },
+  async (args: z.infer<typeof ExtractProjectIntroArgsSchema>) => {
+    const result = await extractProjectIntro(args.path, args.includeAdditionalFiles);
+    
+    // Format the output with metadata
+    const metadata = `Files checked: ${result.filesChecked.join(', ')}\nFiles found: ${result.filesFound.length > 0 ? result.filesFound.join(', ') : 'None'}\n\n`;
+    const fullContent = metadata + (result.content || 'No project introduction files found.');
+    
+    return {
+      content: [{ type: "text" as const, text: fullContent }],
+      structuredContent: {
+        content: result.content,
+        filesFound: result.filesFound,
+        filesChecked: result.filesChecked
+      }
     };
   }
 );

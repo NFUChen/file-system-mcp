@@ -19,7 +19,9 @@ import {
   searchFileContents,
   // File editing functions
   tailFile,
-  headFile
+  headFile,
+  // Project intro extraction
+  extractProjectIntro
 } from '../lib.js';
 
 // Mock fs module
@@ -1490,6 +1492,320 @@ describe('Lib Functions', () => {
         const result = await headFile('/test/file.txt', 2);
         
         expect(mockFileHandle.close).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Project Intro Extraction', () => {
+    describe('extractProjectIntro', () => {
+      const testProjectPath = process.platform === 'win32' ? 'C:\\Users\\test\\project' : '/home/user/project';
+
+      beforeEach(() => {
+        // Mock realpath to return the same path, ensuring it's within allowed directories
+        // The path /home/user/project is within /home/user which is in allowed directories
+        mockFs.realpath.mockImplementation(async (inputPath: any) => {
+          const pathStr = inputPath.toString();
+          // Return the path as-is, which should be within allowed directories
+          return pathStr;
+        });
+      });
+
+      it('extracts README.md when it exists', async () => {
+        const readmeContent = '# My Project\n\nThis is a test project.';
+        const readmePath = path.join(testProjectPath, 'README.md');
+        
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // validatePath for CLAUDE.md (doesn't exist, will throw)
+        mockFs.realpath.mockRejectedValueOnce(new Error('ENOENT'));
+        // validatePath for README.md
+        mockFs.realpath.mockResolvedValueOnce(readmePath);
+        // fs.stat for README.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for README.md
+        mockFs.readFile.mockResolvedValueOnce(readmeContent);
+
+        const result = await extractProjectIntro(testProjectPath);
+
+        expect(result.filesFound).toContain('README.md');
+        expect(result.content).toContain('# README.md');
+        expect(result.content).toContain('This is a test project');
+        expect(result.filesChecked).toContain('README.md');
+        expect(result.filesChecked).toContain('CLAUDE.md');
+      });
+
+      it('extracts CLAUDE.md when it exists', async () => {
+        const claudeContent = '# Project Overview\n\nThis is Claude-specific documentation.';
+        const claudePath = path.join(testProjectPath, 'CLAUDE.md');
+        
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // validatePath for CLAUDE.md
+        mockFs.realpath.mockResolvedValueOnce(claudePath);
+        // fs.stat for CLAUDE.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for CLAUDE.md
+        mockFs.readFile.mockResolvedValueOnce(claudeContent);
+        // validatePath for README.md (doesn't exist)
+        mockFs.realpath.mockRejectedValueOnce(new Error('ENOENT'));
+
+        const result = await extractProjectIntro(testProjectPath);
+
+        expect(result.filesFound).toContain('CLAUDE.md');
+        expect(result.content).toContain('# CLAUDE.md');
+        expect(result.content).toContain('This is Claude-specific documentation');
+      });
+
+      it('combines CLAUDE.md and README.md when both exist', async () => {
+        const claudeContent = '# Project Overview\n\nClaude-specific info.';
+        const readmeContent = '# My Project\n\nGeneral project info.';
+        const claudePath = path.join(testProjectPath, 'CLAUDE.md');
+        const readmePath = path.join(testProjectPath, 'README.md');
+        
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // validatePath for CLAUDE.md
+        mockFs.realpath.mockResolvedValueOnce(claudePath);
+        // fs.stat for CLAUDE.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for CLAUDE.md
+        mockFs.readFile.mockResolvedValueOnce(claudeContent);
+        // validatePath for README.md
+        mockFs.realpath.mockResolvedValueOnce(readmePath);
+        // fs.stat for README.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for README.md
+        mockFs.readFile.mockResolvedValueOnce(readmeContent);
+
+        const result = await extractProjectIntro(testProjectPath);
+
+        expect(result.filesFound).toContain('CLAUDE.md');
+        expect(result.filesFound).toContain('README.md');
+        expect(result.content).toContain('# CLAUDE.md');
+        expect(result.content).toContain('Claude-specific info');
+        expect(result.content).toContain('# README.md');
+        expect(result.content).toContain('General project info');
+        // CLAUDE.md should come before README.md
+        const claudeIndex = result.content.indexOf('# CLAUDE.md');
+        const readmeIndex = result.content.indexOf('# README.md');
+        expect(claudeIndex).toBeLessThan(readmeIndex);
+      });
+
+      it('includes additional files when includeAdditionalFiles is true', async () => {
+        const readmeContent = '# My Project';
+        const contributingContent = '# Contributing\n\nHow to contribute.';
+        const readmePath = path.join(testProjectPath, 'README.md');
+        const contributingPath = path.join(testProjectPath, 'CONTRIBUTING.md');
+        
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // validatePath for CLAUDE.md (doesn't exist)
+        mockFs.realpath.mockRejectedValueOnce(new Error('ENOENT'));
+        // validatePath for README.md
+        mockFs.realpath.mockResolvedValueOnce(readmePath);
+        // fs.stat for README.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for README.md
+        mockFs.readFile.mockResolvedValueOnce(readmeContent);
+        // validatePath for CONTRIBUTING.md
+        mockFs.realpath.mockResolvedValueOnce(contributingPath);
+        // fs.stat for CONTRIBUTING.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for CONTRIBUTING.md
+        mockFs.readFile.mockResolvedValueOnce(contributingContent);
+        // Mock remaining files as not existing (to avoid too many mocks)
+        mockFs.realpath.mockRejectedValue(new Error('ENOENT'));
+
+        const result = await extractProjectIntro(testProjectPath, true);
+
+        expect(result.filesFound).toContain('README.md');
+        expect(result.filesFound).toContain('CONTRIBUTING.md');
+        expect(result.content).toContain('# README.md');
+        expect(result.content).toContain('## Additional Documentation');
+        expect(result.content).toContain('### CONTRIBUTING.md');
+        expect(result.content).toContain('How to contribute');
+      });
+
+      it('excludes additional files when includeAdditionalFiles is false', async () => {
+        const readmeContent = '# My Project';
+        const readmePath = path.join(testProjectPath, 'README.md');
+        
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // validatePath for CLAUDE.md (doesn't exist)
+        mockFs.realpath.mockRejectedValueOnce(new Error('ENOENT'));
+        // validatePath for README.md
+        mockFs.realpath.mockResolvedValueOnce(readmePath);
+        // fs.stat for README.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for README.md
+        mockFs.readFile.mockResolvedValueOnce(readmeContent);
+
+        const result = await extractProjectIntro(testProjectPath, false);
+
+        expect(result.filesFound).toContain('README.md');
+        expect(result.filesFound).not.toContain('CONTRIBUTING.md');
+        expect(result.content).toContain('# README.md');
+        expect(result.content).not.toContain('## Additional Documentation');
+        expect(result.content).not.toContain('CONTRIBUTING.md');
+      });
+
+      it('returns empty result when no files are found', async () => {
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // All files don't exist - validatePath will throw for each
+        mockFs.realpath.mockRejectedValue(new Error('ENOENT'));
+
+        const result = await extractProjectIntro(testProjectPath);
+
+        expect(result.filesFound).toHaveLength(0);
+        expect(result.content).toBe('');
+        expect(result.filesChecked.length).toBeGreaterThan(0);
+      });
+
+      it('handles files in subdirectories', async () => {
+        const readmeContent = '# My Project';
+        const docsReadmeContent = '# Documentation\n\nDocs content.';
+        const readmePath = path.join(testProjectPath, 'README.md');
+        const docsReadmePath = path.join(testProjectPath, 'docs/README.md');
+        
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // validatePath for CLAUDE.md (doesn't exist)
+        mockFs.realpath.mockRejectedValueOnce(new Error('ENOENT'));
+        // validatePath for README.md
+        mockFs.realpath.mockResolvedValueOnce(readmePath);
+        // fs.stat for README.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for README.md
+        mockFs.readFile.mockResolvedValueOnce(readmeContent);
+        // Mock other files as not existing
+        mockFs.realpath
+          .mockRejectedValueOnce(new Error('ENOENT')) // CONTRIBUTING.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // CHANGELOG.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // SECURITY.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // CODE_OF_CONDUCT.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // ARCHITECTURE.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // DESIGN.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // OVERVIEW.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // INTRO.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // ABOUT.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // GETTING_STARTED.md
+          .mockRejectedValueOnce(new Error('ENOENT')) // QUICKSTART.md
+          .mockResolvedValueOnce(docsReadmePath); // docs/README.md
+        // fs.stat for docs/README.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for docs/README.md
+        mockFs.readFile.mockResolvedValueOnce(docsReadmeContent);
+        // Mock remaining files
+        mockFs.realpath.mockRejectedValue(new Error('ENOENT'));
+
+        const result = await extractProjectIntro(testProjectPath, true);
+
+        expect(result.filesFound).toContain('README.md');
+        expect(result.filesFound).toContain('docs/README.md');
+        expect(result.content).toContain('# README.md');
+        expect(result.content).toContain('## Additional Documentation');
+        expect(result.content).toContain('### docs/README.md');
+        expect(result.content).toContain('Docs content');
+      });
+
+      it('handles validation errors gracefully', async () => {
+        // Mock validatePath to throw error for files outside allowed directories
+        mockFs.realpath.mockRejectedValueOnce(new Error('Access denied'));
+
+        await expect(extractProjectIntro(testProjectPath))
+          .rejects.toThrow('Access denied');
+      });
+
+      it('skips directories and only reads files', async () => {
+        const readmeContent = '# My Project';
+        const readmePath = path.join(testProjectPath, 'README.md');
+        const contributingPath = path.join(testProjectPath, 'CONTRIBUTING.md');
+        
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // validatePath for CLAUDE.md (doesn't exist)
+        mockFs.realpath.mockRejectedValueOnce(new Error('ENOENT'));
+        // validatePath for README.md
+        mockFs.realpath.mockResolvedValueOnce(readmePath);
+        // fs.stat for README.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for README.md
+        mockFs.readFile.mockResolvedValueOnce(readmeContent);
+        // validatePath for CONTRIBUTING.md
+        mockFs.realpath.mockResolvedValueOnce(contributingPath);
+        // fs.stat for CONTRIBUTING.md (it's a directory, not a file)
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => false, isDirectory: () => true });
+        // Mock remaining files
+        mockFs.realpath.mockRejectedValue(new Error('ENOENT'));
+
+        const result = await extractProjectIntro(testProjectPath, true);
+
+        expect(result.filesFound).toContain('README.md');
+        expect(result.filesFound).not.toContain('CONTRIBUTING.md');
+      });
+
+      it('maintains priority file order', async () => {
+        const claudeContent = 'Claude content';
+        const readmeContent = 'README content';
+        const claudePath = path.join(testProjectPath, 'CLAUDE.md');
+        const readmePath = path.join(testProjectPath, 'README.md');
+        
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // validatePath for CLAUDE.md
+        mockFs.realpath.mockResolvedValueOnce(claudePath);
+        // fs.stat for CLAUDE.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for CLAUDE.md
+        mockFs.readFile.mockResolvedValueOnce(claudeContent);
+        // validatePath for README.md
+        mockFs.realpath.mockResolvedValueOnce(readmePath);
+        // fs.stat for README.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for README.md
+        mockFs.readFile.mockResolvedValueOnce(readmeContent);
+        // Mock remaining files
+        mockFs.realpath.mockRejectedValue(new Error('ENOENT'));
+
+        const result = await extractProjectIntro(testProjectPath);
+
+        // Verify order: CLAUDE.md comes before README.md
+        const content = result.content;
+        const claudePos = content.indexOf('# CLAUDE.md');
+        const readmePos = content.indexOf('# README.md');
+        
+        expect(claudePos).toBeGreaterThan(-1);
+        expect(readmePos).toBeGreaterThan(-1);
+        expect(claudePos).toBeLessThan(readmePos);
+      });
+
+      it('includes all checked files in filesChecked array', async () => {
+        const readmeContent = '# My Project';
+        const readmePath = path.join(testProjectPath, 'README.md');
+        
+        // validatePath for project root
+        mockFs.realpath.mockResolvedValueOnce(testProjectPath);
+        // validatePath for CLAUDE.md (doesn't exist)
+        mockFs.realpath.mockRejectedValueOnce(new Error('ENOENT'));
+        // validatePath for README.md
+        mockFs.realpath.mockResolvedValueOnce(readmePath);
+        // fs.stat for README.md
+        mockFs.stat.mockResolvedValueOnce({ isFile: () => true, isDirectory: () => false });
+        // readFileContent for README.md
+        mockFs.readFile.mockResolvedValueOnce(readmeContent);
+        // Mock remaining files as not existing
+        mockFs.realpath.mockRejectedValue(new Error('ENOENT'));
+
+        const result = await extractProjectIntro(testProjectPath, true);
+
+        // Should include priority files
+        expect(result.filesChecked).toContain('CLAUDE.md');
+        expect(result.filesChecked).toContain('README.md');
+        // Should include additional files when includeAdditionalFiles is true
+        expect(result.filesChecked).toContain('CONTRIBUTING.md');
+        expect(result.filesChecked).toContain('CHANGELOG.md');
       });
     });
   });

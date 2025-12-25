@@ -670,3 +670,123 @@ export async function searchFileContents(options: GrepOptions): Promise<string[]
     throw new Error(`ripgrep execution failed: ${error.message || String(error)}`);
   }
 }
+
+/**
+ * Extract project introduction from common documentation files.
+ * Looks for files like CLAUDE.md, README.md, and other common intro files.
+ * 
+ * @param projectPath - The root path of the project to analyze
+ * @param includeAdditionalFiles - Whether to include additional common intro files
+ * @returns Object containing the extracted content and metadata about which files were found
+ */
+export interface ProjectIntroResult {
+  content: string;
+  filesFound: string[];
+  filesChecked: string[];
+}
+
+export async function extractProjectIntro(
+  projectPath: string,
+  includeAdditionalFiles: boolean = true
+): Promise<ProjectIntroResult> {
+  const validPath = await validatePath(projectPath);
+  
+  // Priority list of files that typically contain project introductions
+  // CLAUDE.md is Claude-specific, README.md is universal
+  const priorityFiles = [
+    'CLAUDE.md',
+    'README.md',
+  ];
+  
+  // Additional files that might contain project information
+  // Ordered by commonality: most common first
+  const additionalFiles = includeAdditionalFiles ? [
+    // Common documentation files (found in many projects)
+    'CONTRIBUTING.md',
+    'CHANGELOG.md',
+    'SECURITY.md',
+    'CODE_OF_CONDUCT.md',
+    // Architecture and design docs (common in larger projects)
+    'ARCHITECTURE.md',
+    'DESIGN.md',
+    'OVERVIEW.md',
+    // Alternative intro files (less common)
+    'INTRO.md',
+    'ABOUT.md',
+    'GETTING_STARTED.md',
+    'QUICKSTART.md',
+    // Documentation directories
+    'docs/README.md',
+    'docs/INTRO.md',
+    'docs/OVERVIEW.md',
+    'docs/GETTING_STARTED.md',
+    // GitHub-specific
+    '.github/README.md',
+    '.github/CONTRIBUTING.md',
+  ] : [];
+  
+  const allFiles = [...priorityFiles, ...additionalFiles];
+  const filesFound: string[] = [];
+  const contents: Array<{ file: string; content: string }> = [];
+  
+  // Check each file
+  for (const fileName of allFiles) {
+    const filePath = path.join(validPath, fileName);
+    try {
+      // Validate the file path is within allowed directories
+      await validatePath(filePath);
+      
+      // Check if file exists and is readable
+      const stats = await fs.stat(filePath);
+      if (stats.isFile()) {
+        const content = await readFileContent(filePath);
+        filesFound.push(fileName);
+        contents.push({ file: fileName, content });
+      }
+    } catch (error) {
+      // File doesn't exist or can't be read - skip it
+      continue;
+    }
+  }
+  
+  // If no files found, return empty result
+  if (contents.length === 0) {
+    return {
+      content: '',
+      filesFound: [],
+      filesChecked: allFiles,
+    };
+  }
+  
+  // Combine contents with clear separators
+  // Priority files first (in order), then additional files
+  const priorityContents: Array<{ file: string; content: string }> = [];
+  for (const priorityFile of priorityFiles) {
+    const found = contents.find(c => c.file === priorityFile);
+    if (found) {
+      priorityContents.push(found);
+    }
+  }
+  const additionalContents = contents.filter(c => additionalFiles.includes(c.file));
+  
+  const combinedContents: string[] = [];
+  
+  // Add priority files in order
+  for (const { file, content } of priorityContents) {
+    combinedContents.push(`# ${file}\n\n${content}`);
+  }
+  
+  // Add additional files if any
+  if (additionalContents.length > 0) {
+    combinedContents.push('\n---\n\n## Additional Documentation\n');
+    for (const { file, content } of additionalContents) {
+      combinedContents.push(`### ${file}\n\n${content}`);
+    }
+  }
+  
+  return {
+    content: combinedContents.join('\n\n---\n\n'),
+    filesFound,
+    filesChecked: allFiles,
+  };
+}
