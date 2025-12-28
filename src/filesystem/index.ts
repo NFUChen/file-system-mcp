@@ -326,31 +326,31 @@ server.registerTool(
 
 
 
-server.registerTool(
-  "create_directory",
-  {
-    title: "Create Directory",
-    description:
-      "Create a new directory or ensure a directory exists. Can create multiple " +
-      "nested directories in one operation. If the directory already exists, " +
-      "this operation will succeed silently. Perfect for setting up directory " +
-      "structures for projects or ensuring required paths exist. Only works within allowed directories.",
-    inputSchema: {
-      path: z.string()
-    },
-    outputSchema: { content: z.string() },
-    annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false }
-  },
-  async (args: z.infer<typeof CreateDirectoryArgsSchema>) => {
-    const validPath = await validatePath(args.path);
-    await fs.mkdir(validPath, { recursive: true });
-    const text = `Successfully created directory ${args.path}`;
-    return {
-      content: [{ type: "text" as const, text }],
-      structuredContent: { content: text }
-    };
-  }
-);
+// server.registerTool(
+//   "create_directory",
+//   {
+//     title: "Create Directory",
+//     description:
+//       "Create a new directory or ensure a directory exists. Can create multiple " +
+//       "nested directories in one operation. If the directory already exists, " +
+//       "this operation will succeed silently. Perfect for setting up directory " +
+//       "structures for projects or ensuring required paths exist. Only works within allowed directories.",
+//     inputSchema: {
+//       path: z.string()
+//     },
+//     outputSchema: { content: z.string() },
+//     annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false }
+//   },
+//   async (args: z.infer<typeof CreateDirectoryArgsSchema>) => {
+//     const validPath = await validatePath(args.path);
+//     await fs.mkdir(validPath, { recursive: true });
+//     const text = `Successfully created directory ${args.path}`;
+//     return {
+//       content: [{ type: "text" as const, text }],
+//       structuredContent: { content: text }
+//     };
+//   }
+// );
 
 server.registerTool(
   "list_directory",
@@ -529,34 +529,34 @@ server.registerTool(
 //   }
 // );
 
-server.registerTool(
-  "move_file",
-  {
-    title: "Move File",
-    description:
-      "Move or rename files and directories. Can move files between directories " +
-      "and rename them in a single operation. If the destination exists, the " +
-      "operation will fail. Works across different directories and can be used " +
-      "for simple renaming within the same directory. Both source and destination must be within allowed directories.",
-    inputSchema: {
-      source: z.string(),
-      destination: z.string()
-    },
-    outputSchema: { content: z.string() },
-    annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: false }
-  },
-  async (args: z.infer<typeof MoveFileArgsSchema>) => {
-    const validSourcePath = await validatePath(args.source);
-    const validDestPath = await validatePath(args.destination);
-    await fs.rename(validSourcePath, validDestPath);
-    const text = `Successfully moved ${args.source} to ${args.destination}`;
-    const contentBlock = { type: "text" as const, text };
-    return {
-      content: [contentBlock],
-      structuredContent: { content: text }
-    };
-  }
-);
+// server.registerTool(
+//   "move_file",
+//   {
+//     title: "Move File",
+//     description:
+//       "Move or rename files and directories. Can move files between directories " +
+//       "and rename them in a single operation. If the destination exists, the " +
+//       "operation will fail. Works across different directories and can be used " +
+//       "for simple renaming within the same directory. Both source and destination must be within allowed directories.",
+//     inputSchema: {
+//       source: z.string(),
+//       destination: z.string()
+//     },
+//     outputSchema: { content: z.string() },
+//     annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: false }
+//   },
+//   async (args: z.infer<typeof MoveFileArgsSchema>) => {
+//     const validSourcePath = await validatePath(args.source);
+//     const validDestPath = await validatePath(args.destination);
+//     await fs.rename(validSourcePath, validDestPath);
+//     const text = `Successfully moved ${args.source} to ${args.destination}`;
+//     const contentBlock = { type: "text" as const, text };
+//     return {
+//       content: [contentBlock],
+//       structuredContent: { content: text }
+//     };
+//   }
+// );
 
 server.registerTool(
   "search_files",
