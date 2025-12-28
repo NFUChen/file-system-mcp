@@ -572,8 +572,12 @@ export async function searchFileContents(options: GrepOptions): Promise<string[]
     rgArgs.push('--glob', `!${excludePattern}`);
   }
 
-  // Note: ripgrep's --max-count limits per file, not globally
-  // We'll handle global maxResults limit in post-processing
+  // Use --max-count to limit matches per file to help prevent buffer overflow
+  // This limits the number of matches per file, which helps control output size
+  // We'll still respect the global maxResults limit in post-processing
+  // Set a reasonable per-file limit: if maxResults is small, use it; otherwise use a larger default
+  const maxCountPerFile = Math.min(maxResults * 2, 1000); // Cap at 1000 matches per file
+  rgArgs.push(`--max-count=${maxCountPerFile}`);
 
   // Output format: file path, line number, and content
   rgArgs.push('--with-filename');
@@ -584,9 +588,10 @@ export async function searchFileContents(options: GrepOptions): Promise<string[]
   rgArgs.push('--color', 'never');
 
   try {
-    // Execute ripgrep
+    // Execute ripgrep with increased buffer size to handle large codebases
+    // 100MB should be sufficient for most cases, but we'll catch overflow errors gracefully
     const { stdout, stderr } = await execFileAsync('rg', rgArgs, {
-      maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+      maxBuffer: 100 * 1024 * 1024, // 100MB buffer (increased from 10MB)
       encoding: 'utf-8' as BufferEncoding
     });
 
@@ -667,6 +672,16 @@ export async function searchFileContents(options: GrepOptions): Promise<string[]
       // ripgrep returns exit code 1 when no matches are found (this is normal)
       return [];
     }
+    
+    // Handle buffer overflow errors specifically
+    if (error.message && (error.message.includes('maxBuffer') || error.message.includes('stdout maxBuffer'))) {
+      throw new Error(
+        `ripgrep output exceeded buffer limit. The search returned too many results. ` +
+        `Try: 1) Reducing the search scope with a more specific pattern, 2) Using excludePatterns to filter out large directories, ` +
+        `3) Setting a lower maxResults value (current: ${maxResults}), or 4) Searching in a smaller directory.`
+      );
+    }
+    
     throw new Error(`ripgrep execution failed: ${error.message || String(error)}`);
   }
 }
