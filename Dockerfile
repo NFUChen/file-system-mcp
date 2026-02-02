@@ -1,24 +1,24 @@
-FROM node:20-alpine
+FROM ghcr.io/open-webui/mcpo:main
 
 # Set working directory
 WORKDIR /app
 
-# Install TypeScript globally
-RUN npm install -g typescript
+# Install Node.js and TypeScript (mcpo is already included in the base image)
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g typescript && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy package files
-COPY package*.json ./
-COPY src/filesystem/package.json ./src/filesystem/
-
-# Install dependencies
-RUN npm install
-RUN cd src/filesystem && npm install
-
-# Copy source code
+# Copy all source files (needed for workspace build)
 COPY . .
 
-# Build the project
-RUN npm run build
+# Install dependencies and build
+RUN npm install
 
-# Run tests
-CMD ["npm", "run", "test"]
+# Expose port for HTTP access
+EXPOSE 3000
+
+# Use mcpo to wrap the filesystem server with OpenAPI REST endpoints
+# Using ENTRYPOINT ensures mcpo is always used and can't be overridden
+ENTRYPOINT ["mcpo", "--port", "3000", "--", "node", "src/filesystem/dist/index.js", "/workspace"]
