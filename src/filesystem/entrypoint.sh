@@ -116,6 +116,6 @@ fi
 # Export the database path for the Node.js process
 export PLOCATE_DB
 
-# Start the Node.js server with the original arguments
-exec node /app/dist/index.js "$@"
+# Start the Node.js server with mcpo wrapper for OpenAPI REST endpoints
+exec mcpo --port 3000 -- node /app/filesystem/dist/index.js "$@"
 
