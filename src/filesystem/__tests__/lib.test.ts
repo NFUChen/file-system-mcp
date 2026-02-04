@@ -11,6 +11,10 @@ import {
   // Security & validation functions
   validatePath,
   setAllowedDirectories,
+  // Root search control functions
+  isRootSearchDisabled,
+  isRootSearch,
+  validateSearchPath,
   // File operations
   getFileStats,
   readFileContent,
@@ -1806,6 +1810,174 @@ describe('Lib Functions', () => {
         // Should include additional files when includeAdditionalFiles is true
         expect(result.filesChecked).toContain('CONTRIBUTING.md');
         expect(result.filesChecked).toContain('CHANGELOG.md');
+      });
+    });
+  });
+
+  describe('DISABLE_ROOT_SEARCH functionality', () => {
+    const originalEnv = process.env.DISABLE_ROOT_SEARCH;
+    
+    afterEach(() => {
+      // Restore original environment variable
+      if (originalEnv !== undefined) {
+        process.env.DISABLE_ROOT_SEARCH = originalEnv;
+      } else {
+        delete process.env.DISABLE_ROOT_SEARCH;
+      }
+    });
+
+    describe('isRootSearchDisabled', () => {
+      it('should return true when DISABLE_ROOT_SEARCH is "true"', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        expect(isRootSearchDisabled()).toBe(true);
+      });
+
+      it('should return true when DISABLE_ROOT_SEARCH is "1"', () => {
+        process.env.DISABLE_ROOT_SEARCH = '1';
+        expect(isRootSearchDisabled()).toBe(true);
+      });
+
+      it('should return false when DISABLE_ROOT_SEARCH is "false"', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'false';
+        expect(isRootSearchDisabled()).toBe(false);
+      });
+
+      it('should return false when DISABLE_ROOT_SEARCH is undefined', () => {
+        delete process.env.DISABLE_ROOT_SEARCH;
+        expect(isRootSearchDisabled()).toBe(false);
+      });
+
+      it('should return false when DISABLE_ROOT_SEARCH is any other value', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'maybe';
+        expect(isRootSearchDisabled()).toBe(false);
+      });
+    });
+
+    describe('isRootSearch', () => {
+      const allowedDirs = ['/home/user', '/tmp', '/allowed'];
+
+      beforeEach(() => {
+        setAllowedDirectories(allowedDirs);
+      });
+
+      it('should return false when root search is not disabled', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'false';
+        expect(isRootSearch('/home/user')).toBe(false);
+      });
+
+      it('should return true when searching exactly at allowed directory root', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        expect(isRootSearch('/home/user')).toBe(true);
+        expect(isRootSearch('/tmp')).toBe(true);
+        expect(isRootSearch('/allowed')).toBe(true);
+      });
+
+      it('should return false when searching in subdirectories', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        expect(isRootSearch('/home/user/project')).toBe(false);
+        expect(isRootSearch('/tmp/test')).toBe(false);
+        expect(isRootSearch('/allowed/subdir')).toBe(false);
+      });
+
+      it('should handle path normalization correctly', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        expect(isRootSearch('/home/user/')).toBe(true); // trailing slash
+        expect(isRootSearch('/home/user/.')).toBe(true); // with dot
+        expect(isRootSearch('/home/user/../user')).toBe(true); // with parent reference
+      });
+    });
+
+    describe('validateSearchPath', () => {
+      const allowedDirs = ['/home/user', '/tmp'];
+
+      beforeEach(() => {
+        setAllowedDirectories(allowedDirs);
+      });
+
+      it('should not throw when root search is disabled but searching in subdirectory', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        expect(() => validateSearchPath('/home/user/project')).not.toThrow();
+        expect(() => validateSearchPath('/tmp/test')).not.toThrow();
+      });
+
+      it('should throw when root search is disabled and searching at root', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        expect(() => validateSearchPath('/home/user')).toThrow(
+          'Root directory search is disabled via DISABLE_ROOT_SEARCH environment variable'
+        );
+        expect(() => validateSearchPath('/tmp')).toThrow(
+          'Root directory search is disabled via DISABLE_ROOT_SEARCH environment variable'
+        );
+      });
+
+      it('should not throw when root search is not disabled', () => {
+        process.env.DISABLE_ROOT_SEARCH = 'false';
+        expect(() => validateSearchPath('/home/user')).not.toThrow();
+        expect(() => validateSearchPath('/tmp')).not.toThrow();
+      });
+    });
+
+    describe('searchFilesWithValidation with DISABLE_ROOT_SEARCH', () => {
+      const allowedDirs = ['/home/user', '/tmp'];
+
+      beforeEach(() => {
+        setAllowedDirectories(allowedDirs);
+        // Mock fs operations
+        mockFs.readdir.mockResolvedValue([]);
+        mockFs.realpath.mockImplementation((path: string) => Promise.resolve(path));
+        mockFs.stat.mockResolvedValue({ isDirectory: () => true });
+      });
+
+      it('should throw when root search is disabled and searching at root', async () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        
+        await expect(searchFilesWithValidation('/home/user', '*.js', allowedDirs))
+          .rejects.toThrow('Root directory search is disabled');
+      });
+
+      it('should work when root search is disabled but searching in subdirectory', async () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        
+        await expect(searchFilesWithValidation('/home/user/project', '*.js', allowedDirs))
+          .resolves.toEqual([]);
+      });
+    });
+
+    describe('searchFileContents with DISABLE_ROOT_SEARCH', () => {
+      const allowedDirs = ['/home/user', '/tmp'];
+
+      beforeEach(() => {
+        setAllowedDirectories(allowedDirs);
+        // Mock fs operations
+        mockFs.realpath.mockImplementation((path: string) => Promise.resolve(path));
+        mockFs.stat.mockResolvedValue({ isDirectory: () => true });
+      });
+
+      it('should throw when root search is disabled and searching at root', async () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        
+        await expect(searchFileContents({
+          searchPath: '/home/user',
+          pattern: 'test'
+        })).rejects.toThrow('Root directory search is disabled');
+      });
+
+      it('should work when root search is disabled but searching in subdirectory', async () => {
+        process.env.DISABLE_ROOT_SEARCH = 'true';
+        
+        // Mock execFile to simulate ripgrep returning no matches
+        mockExecFile.mockImplementationOnce((cmd, args, options, callback) => {
+          if (callback) {
+            const error = new Error('No matches') as any;
+            error.code = 1; // ripgrep returns 1 when no matches found
+            callback(error);
+          }
+        });
+        
+        await expect(searchFileContents({
+          searchPath: '/home/user/project',
+          pattern: 'test'
+        })).resolves.toEqual([]);
       });
     });
   });

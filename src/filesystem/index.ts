@@ -567,7 +567,8 @@ server.registerTool(
       "The patterns should be glob-style patterns that match paths relative to the working directory. " +
       "Use pattern like '*.ext' to match files in current directory, and '**/*.ext' to match files in all subdirectories. " +
       "Returns full paths to all matching items. Great for finding files when you don't know their exact location. " +
-      "Only searches within allowed directories.",
+      "Only searches within allowed directories. " +
+      "Note: If DISABLE_ROOT_SEARCH environment variable is set to 'true' or '1', searches at the root level of allowed directories will be rejected to help manage context limits.",
     inputSchema: {
       path: z.string(),
       pattern: z.string(),
@@ -624,7 +625,8 @@ server.registerTool(
       "Can search recursively through directories and supports various options " +
       "like case-insensitive matching, context lines, and file pattern filtering. " +
       "Returns detailed results showing matching lines with optional context. " +
-      "Only works within allowed directories.",
+      "Only works within allowed directories. " +
+      "Note: If DISABLE_ROOT_SEARCH environment variable is set to 'true' or '1', searches at the root level of allowed directories will be rejected to help manage context limits.",
     inputSchema: {
       path: z.string().describe("Directory or file to search in"),
       pattern: z.string().describe("Regular expression pattern to search for"),

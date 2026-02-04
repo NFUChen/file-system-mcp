@@ -24,6 +24,38 @@ export function getAllowedDirectories(): string[] {
   return [...allowedDirectories];
 }
 
+// Function to check if root search is disabled and if the path is a root search
+export function isRootSearchDisabled(): boolean {
+  return process.env.DISABLE_ROOT_SEARCH === 'true' || process.env.DISABLE_ROOT_SEARCH === '1';
+}
+
+// Function to check if a search path is considered a "root search"
+// A root search is when the search path matches one of the allowed directories exactly
+export function isRootSearch(searchPath: string): boolean {
+  if (!isRootSearchDisabled()) {
+    return false; // If root search is not disabled, no path is considered a root search
+  }
+  
+  const normalizedSearchPath = normalizePath(path.resolve(searchPath));
+  
+  // Check if the search path exactly matches any of the allowed directories
+  return allowedDirectories.some(allowedDir => {
+    const normalizedAllowedDir = normalizePath(allowedDir);
+    return normalizedSearchPath === normalizedAllowedDir;
+  });
+}
+
+// Function to validate that a search path is not a root search when disabled
+export function validateSearchPath(searchPath: string): void {
+  if (isRootSearch(searchPath)) {
+    throw new Error(
+      `Root directory search is disabled via DISABLE_ROOT_SEARCH environment variable. ` +
+      `Please specify a subdirectory within the allowed directories instead of searching at the root level. ` +
+      `This helps manage context limits by requiring more focused searches.`
+    );
+  }
+}
+
 // Type definitions
 interface FileInfo {
   size: number;
@@ -334,6 +366,10 @@ export async function searchFilesWithValidation(
   options: SearchOptions = {}
 ): Promise<string[]> {
   const { excludePatterns = [] } = options;
+  
+  // Validate that this is not a root search when disabled
+  validateSearchPath(rootPath);
+  
   const results: string[] = [];
 
   // Try to use plocate if available
@@ -508,6 +544,9 @@ export async function searchFileContents(options: GrepOptions): Promise<string[]
     invertMatch = false,
     fixedStrings = false
   } = options;
+
+  // Validate that this is not a root search when disabled
+  validateSearchPath(searchPath);
 
   // Handle context parameter properly - if context is provided (and not 0), it overrides beforeContext and afterContext
   const effectiveBeforeContext = (context !== undefined && context > 0) ? context : (beforeContext !== undefined ? beforeContext : 0);
